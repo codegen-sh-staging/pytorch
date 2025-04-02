@@ -351,7 +351,6 @@ __device__ __inline__ void st_vec(T* addr, const Vec<Alignment>& vec) {
   } else {
     static_assert(dependent_false<T>);
   }
-  return vec;
 #else
   if constexpr (Alignment == 16) {
     asm("st.global.v4.u32 [%0], {%1,%2,%3,%4};"
