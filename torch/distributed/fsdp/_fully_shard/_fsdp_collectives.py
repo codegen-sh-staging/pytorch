@@ -1,3 +1,6 @@
+import os
+from collections.abc import Generator
+from contextlib import contextmanager, ExitStack
 from itertools import chain
 from typing import Callable, cast, NamedTuple, Optional, Union
 
@@ -14,6 +17,17 @@ from ._fsdp_common import (
     compiled_autograd_enabled,
 )
 from ._fsdp_param import FSDPParam, ShardedState
+
+
+MEM_POOL: Optional[torch.cuda.MemPool] = None
+
+
+@contextmanager
+def maybe_mem_pool() -> Generator[None]:
+    with ExitStack() as stack:
+        if MEM_POOL is not None:
+            stack.enter_context(torch.cuda.use_mem_pool(MEM_POOL))
+        yield
 
 
 class AllGatherResult(NamedTuple):
@@ -80,12 +94,13 @@ def all_gather_copy_in_cuda(
     dtype: torch.dtype,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    all_gather_output = torch.empty(
-        (all_gather_input_numel * world_size,), dtype=dtype, device=device
-    )
-    all_gather_input = all_gather_output.narrow(
-        0, all_gather_input_numel * rank, all_gather_input_numel
-    )
+    with maybe_mem_pool():
+        all_gather_output = torch.empty(
+            (all_gather_input_numel * world_size,), dtype=dtype, device=device
+        )
+        all_gather_input = all_gather_output.narrow(
+            0, all_gather_input_numel * rank, all_gather_input_numel
+        )
     foreach_copy_dsts = torch.split(all_gather_input, inp_split_sizes)
     with torch.no_grad():
         torch._foreach_copy_(foreach_copy_dsts, all_gather_inputs)
@@ -398,9 +413,10 @@ def foreach_reduce(
     )
     reduce_scatter_input_numel = sum(s.numel() for s in padded_unsharded_sizes)
     reduce_scatter_output_numel = reduce_scatter_input_numel // world_size
-    reduce_scatter_input = torch.empty(
-        (reduce_scatter_input_numel,), dtype=reduce_dtype, device=device
-    )
+    with maybe_mem_pool():
+        reduce_scatter_input = torch.empty(
+            (reduce_scatter_input_numel,), dtype=reduce_dtype, device=device
+        )
     device_handle = _get_device_handle(device.type)
     foreach_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_size)
     current_stream = device_handle.current_stream()
@@ -410,7 +426,10 @@ def foreach_reduce(
     all_reduce_input = None
     all_reduce_event = None
     with device_handle.stream(reduce_scatter_stream):
-        reduce_output = reduce_scatter_input.new_empty((reduce_scatter_output_numel,))
+        with maybe_mem_pool():
+            reduce_output = reduce_scatter_input.new_empty(
+                (reduce_scatter_output_numel,)
+            )
         _div_if_needed(reduce_scatter_input, predivide_factor)
         if reduce_scatter_reduce_op is None:
             if predivide_factor is None:
@@ -569,8 +588,11 @@ def _get_gradient_divide_factors(
 ) -> Union[tuple[None, None], tuple[float, float]]:
     # For fp32/bf16, we do not need to worry about overflow/underflow, so we
     # use NCCL's built-in division to avoid separate div kernels
-    if reduce_dtype in (torch.float32, torch.bfloat16) and device_type != "mtia":
+    prefer_avg = reduce_dtype in (torch.float32, torch.bfloat16) and device_type != "mtia"
+    op_to_use = os.getenv("TORCH_FSDP2_REDUCE_OP", "AVG" if prefer_avg else "SUM")
+    if op_to_use == "AVG":
         return None, None
+    assert op_to_use == "SUM"
     data_parallel_size = reduce_scatter_group.size()
     if all_reduce_group is not None:
         data_parallel_size *= all_reduce_group.size()
