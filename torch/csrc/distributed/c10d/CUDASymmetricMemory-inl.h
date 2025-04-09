@@ -53,14 +53,8 @@ cas(uint32_t* addr, uint32_t compare, uint32_t val) {
   ref.compare_exchange_strong(compare, val, cuda::std::memory_order(Sem));
   return compare;
 #elif defined(USE_ROCM)
-  if (Sem == std::memory_order_acquire || Sem == std::memory_order_acq_rel) {
-    __threadfence_system();
-  }
-  uint32_t old_val = atomicCAS_system(addr, compare, val);
-  if (Sem == std::memory_order_release || Sem == std::memory_order_acq_rel) {
-    __threadfence_system();
-  }
-  return old_val;
+  __atomic_compare_exchange_n(addr, &compare, val, false, Sem, Sem);
+  return compare;
 #else
   CUDA_KERNEL_ASSERT(false);
   return 0;
@@ -306,8 +300,7 @@ __device__ __inline__ Vec<Alignment> ld_vec(const T* addr) {
 #elif defined(USE_ROCM)
   Vec<Alignment> vec;
   if constexpr (Alignment == 16) {
-    vec.u64[0] = reinterpret_cast<const uint64_t*>(addr)[0];
-    vec.u64[1] = reinterpret_cast<const uint64_t*>(addr)[1];
+    vec.u128 = *reinterpret_cast<const uint4*>(addr);
   } else if constexpr (Alignment == 8) {
     vec.u64 = *reinterpret_cast<const uint64_t*>(addr);
   } else if constexpr (Alignment == 4) {
