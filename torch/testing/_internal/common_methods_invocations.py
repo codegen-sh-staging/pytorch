@@ -156,6 +156,23 @@ if TEST_SCIPY:
 
 # test if a tensor is close to an integer
 def close_to_int(x, eps=0.1):
+    """
+    Check if tensor values are close to integers within a specified tolerance.
+    
+    This utility function is commonly used in PyTorch testing to verify that
+    operations that should produce integer-like results actually do so within
+    floating-point precision limits.
+    
+    Args:
+        x (torch.Tensor): Input tensor to check
+        eps (float, optional): Tolerance for "closeness" to integer. Default: 0.1
+        
+    Returns:
+        torch.Tensor: Boolean tensor indicating which elements are close to integers
+        
+    Note:
+        For complex tensors, checks both real and imaginary parts.
+    """
     if x.is_complex():
         y = torch.abs(torch.view_as_complex(torch.frac(torch.view_as_real(x))))
     else:
@@ -9689,6 +9706,28 @@ class foreach_pointwise_sample_func(foreach_inputs_sample_func):
                 yield sample
                 if rightmost_arg_type == ForeachRightmostArgType.TensorList:
                     args.pop()
+
+# ============================================================================
+# FOREACH OPERATION DATABASE DEFINITIONS
+# ============================================================================
+# The following sections define comprehensive test configurations for PyTorch
+# foreach operations. These operations apply functions element-wise across
+# lists of tensors, providing efficient batch processing capabilities.
+#
+# Each OpInfo contains:
+# - Function metadata (name, variants, supported dtypes)
+# - Sample input generators for testing
+# - Device/dtype support matrices
+# - Skip/failure decorators for known issues
+# - Autograd and forward-mode AD support flags
+#
+# The database is organized into categories:
+# - Unary operations (single input tensor list)
+# - Binary operations (two input tensor lists)
+# - Pointwise operations (element-wise operations)
+# - Reduction operations (reduce across tensor dimensions)
+# - Other specialized operations
+# ============================================================================
 
 
 foreach_unary_op_db: list[OpInfo] = [
@@ -24748,9 +24787,39 @@ def gather_variable(shape, index_dim, max_indices, duplicate=False, device=torch
     return index
 
 def bernoulli_scalar():
+    """
+    Generate a random boolean scalar using Bernoulli distribution.
+    
+    This utility function creates a single boolean value by generating a
+    zero tensor and applying the Bernoulli distribution with default probability.
+    Commonly used in PyTorch testing for generating random boolean conditions.
+    
+    Returns:
+        torch.Tensor: A scalar boolean tensor (True or False)
+        
+    Note:
+        Uses default Bernoulli probability (0.5), so True and False are equally likely.
+    """
     return torch.tensor(0, dtype=torch.bool).bernoulli_()
 
 def mask_not_all_zeros(shape):
+    """
+    Generate a boolean mask tensor that is guaranteed to have at least one True value.
+    
+    This function creates a random boolean mask by generating random normal values
+    and checking which ones are greater than 0. It ensures that the resulting mask
+    is not all zeros by repeatedly generating until at least one True value exists.
+    
+    Args:
+        shape (tuple): Shape of the desired mask tensor
+        
+    Returns:
+        torch.Tensor: Boolean tensor with at least one True value
+        
+    Note:
+        This function may loop indefinitely in theory, but the probability of
+        generating all False values decreases exponentially with tensor size.
+    """
     assert len(shape) > 0
     while True:
         result = torch.randn(shape).gt(0)
